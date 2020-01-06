@@ -1,0 +1,139 @@
+
+第1章は綺麗なデータの加工(ECデータ) 
+
+●ECデータの加工
+実際の現場ではデータをかき集めるところから始まり、
+データの概要を捉え、分析に適した形に加工することから始めることが多い
+
+まずはデータの全体像を把握する！
+→ なるべくデータの粒度が細かいデータに合わせてデータを作成
+
+union　＝　縦連結
+  pd.concat([transaction_1, transaction_2], ignore_index=True)
+  ignore_index=True は縦連結の際、ラベルを０から振り直してくれる
+
+
+join 　＝　横連結
+join する際は主軸となるデータを考えつつ、どの列をキーにして join するか考える
+主軸データは基本的に最も粒度が細かいもの
+次にどのデータのどの列をキーにしてジョインするか考えるが、その時考えるべきは
+　①足りない(付加したい)データは何か
+　②共通するデータ列は何か　　　
+
+※ 二重計上にならないように注意！
+
+  pd.merge(transaction_detail, ⇦主軸データ
+           transaction[['transaction_id', 'payment_date', 'customer_id']], ⇦列指定して結合
+           on='transaction_id', how='left') ⇦結合キーを on で指定
+
+  左右の結合キーの名称が同じ場合は on で指定可能(この場合は transaction_id)
+
+
+データ列の追加
+  join_data['price'] = join_data['quantity'] * join_data['item_price']　
+   ⇦ 新しい列は data['ラベル1'] = で生成可能
+   ⇦ 列同士の掛け算は data['ラベル1'] * data['ラベル2']
+
+  print(join_data[['quantity', 'item_price', 'price']].head())
+   ⇦ 1列指定は data['ラベル1']
+   ⇦ 複数列指定は data[['ラベル1', 'ラベル2']]
+
+
+データ加工は一歩間違えると大変！
+→ データ件数の確認等、データの検算をすること！
+
+
+次にデータの統計量を把握　大きく分けて
+
+　①欠損値の把握
+    print(join_data.isnull().sum())
+    isnull() 各ラベルごと欠損があるかを True/False で出力
+             欠損があれば True となり、sum() で Trueの個数(欠損の個数)を出力
+
+  ②全体の数字感
+    print(join_data.describe())
+    count  データ件数
+    mean　 平均値
+    std 　 標準偏差
+    min 　 最小値
+    25%　　四位分数(25%)
+    50%   中央値
+    75%   四位便数(75%)
+    max   最大値
+
+
+次に時系列でデータを把握
+まずは売り上げが全体的に落ちているのか、上がっているのか把握
+→月別に集計して売り上げを一覧表示
+→購入日である payment_date から年次のデータを作成した後、年月列単位で price を集計し表示
+
+  print(join_data.dtypes)
+    まずは型確認
+
+  join_data['payment_date'] = pd.to_datetime(join_data['payment_date'])
+    object型 → datetime型 に変換
+
+  join_data['payment_month'] = join_data['payment_date'].dt.strftime('%Y%m')
+    pandas の datatime は dt を用いることで任意の時系列に変更可能
+    (ex) 2018-02-02 18:31:13
+      dt.strftime('%Y-%m-%d %H:%M:%S') >> 2018-02-02 18:31:13
+      dt.strftime('%Y%m%d') >> 20180202
+
+      %d : 0埋めした10進数で表記した月中の日にち
+      %m : 0埋めした10進数で表記した月
+      %y : 0埋めした10進数で表記した西暦の下2桁
+      %Y : 0埋めした10進数で表記した西暦4桁
+      %H : 0埋めした10進数で表記した時 （24時間表記）
+      %I : 0埋めした10進数で表記した時 （12時間表記）
+      %M : 0埋めした10進数で表記した分
+      %S : 0埋めした10進数で表記した秒
+      %f : 0埋めした10進数で表記したマイクロ秒（6桁）
+
+  print(join_data.groupby('payment_month').sum()['price'])
+    最後に集計
+    groupby はまとめたい列(payment_month)と集計方法を記述(sum())
+    また price 列のみを見たいため最後に ['prime'] 記述
+
+
+次に月別、商品別で売り上げ確認
+  print(join_data.groupby(['payment_month', 'item_name']).sum()[['price', 'quantity']])
+    まとめたい列が複数ある場合はリスト型で指定
+    (ex)
+      city	food	price	quantity
+    0	osaka	apple	 100 1
+    1	osaka	orange 200 2
+    2	osaka	banana 250 3
+    3	osaka	banana 300 4
+    4	tokyo	apple	 150 5
+    5	tokyo	apple	 200 6
+    6	tokyo	banana 400 7
+
+    df.groupby(['city', 'food']).mean()  複数まとめるとラベルA1のラベルB1,ラベルB2,,という風にまとめれる
+
+                  price	quantity
+    city	food
+    osaka	apple	  100.0	1.0
+          banana	275.0	3.5
+          orange	200.0	2.0
+    tokyo	apple	  175.0	5.5
+          banana	400.0	7.0
+
+  もしくは pivot_table を利用した集計
+    print(pd.pivot_table(join_data, index='item_name', columns='payment_month', values=['price', 'quantity'], aggfunc='sum'))
+    index(行) と columns(列) を指定できる
+    values では集計したい数字列を指定(今回は price と quantity)
+    aggfunc では集計方法を指定
+
+
+
+表形式ではわかりにくいため可視化する
+  graph_data = pd.pivot_table(join_data, index='payment_month', columns='item_name', values='price', aggfunc='sum')
+  グラフを作成する際には  横軸に商品名  縦軸に時系列  をとって表作成
+
+  plt.plot(list(graph_data.index), graph_data['PC-A'], label='PC-A')
+  plotは横軸、縦軸の順で指定
+  横軸は時系列なので、表の graph_data.index をリスト型で渡し、
+  縦軸は商品ごとの売り上げで graph_data の各列を指定して渡す
+
+  plt.legend() 凡例表示
+  plt.show() 表示
