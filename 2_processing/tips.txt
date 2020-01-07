@@ -1,0 +1,130 @@
+
+第二章は人の手で入力した綺麗じゃないデータの加工(小売店データ)
+
+●小売店データ
+「データの揺れ」欠損値があったり、表記の整合性がないこと
+ (ex)
+ 日付　2019-10-10
+      2019/10/10
+      10/10/2019  等、同じ日付でも別の文字列データになる
+
+ 名前　佐々木太郎
+ 　　　佐々木 太郎
+ 　　　佐々木　太郎
+ 　　　佐々木太朗　　等、半角全角があると別の文字列になるので注意
+
+
+ まずは商品名の揺れの補正
+ → ①スペースの有無　
+   ②半角全角
+
+    print(len(pd.unique(uriage_data.item_name)))
+      まずは現状の確認
+      重複を削除したユニークな件数を確認
+
+    uriage_data['item_name'] = uriage_data['item_name'].str.upper()
+      小文字を大文字に統一 >> str.upper()
+
+    uriage_data['item_name'] = uriage_data['item_name'].str.replace('  ','')
+    uriage_data['item_name'] = uriage_data['item_name'].str.replace(' ','')
+      半角全角が入らないように置き換え >>  str.replace(' ','')
+
+    print(uriage_data.sort_values(by=['item_name'], ascending=True))
+      データ全体を並び替え >> sort_values(by=['item_name'], ascending=True)
+                           by で対象列を指定
+                           ascending で昇順、降順
+
+    print(pd.unique(uriage_data.item_name))
+    print(len(pd.unique(uriage_data.item_name)))
+      最後に確認
+      ※ 確認忘れないこと！！
+
+
+次に金額の揺れの補正
+→　欠損値の補間
+    print(uriage_data.isnull().any(axis=0))
+    まずは欠損値があるか無いか、ラベルごと確認
+
+    fig_is_null = uriage_data['item_price'].isnull()
+      item_price の中で欠損値がある行を True にしたリスト
+
+
+    for trg in list(uriage_data.loc[fig_is_null, 'item_name'].unique()):
+        price = uriage_data.loc[(~fig_is_null) & (uriage_data['item_name']==trg), 'item_price'].max()
+        uriage_data['item_price'].loc[(fig_is_null) & (uriage_data['item_name']==trg)] = price
+
+    loc[] 条件に合致するデータを抽出
+    　　　 この場合は fig_is_null(uriage_data の item_price が Trueの行(欠損値がある行))行の
+          item_price 列を uriage_data から抽出
+
+      次の unique() は抽出した商品名の重複を無くし、無駄なループを避けている
+      よって trg には欠損値がある商品名のリストが渡される
+
+      続いて price には ~fig_is_null(~ は否定演算子)、
+      つまり欠損値が無い行 かつ item_name == trg を満たす行の
+      item_price 列の最大値を取得
+
+      最後に uriage_data['item_price'] 列の
+      欠損値がある行 かつ item_name == trg を満たす行に price を代入
+
+
+    print(uriage_data.isnull().any(axis=0))
+      最後に検証
+      ラベルごと欠損値があるか無いか確認
+
+    for trg in list(uriage_data['item_name'].sort_values().unique()): # 商品名のソートした重複なしリスト
+        print(trg + ' max:' + str(uriage_data.loc[uriage_data['item_name']==trg]['item_price'].max()) + ' min:' + str(uriage_data.loc[uriage_data['item_name']==trg]['item_price'].min(skipna=False)))
+      商品名のソートした重複なしリストに対して、最大値と最小値を確認
+      →　差がなければOK！
+
+    min(skipna=False) : 欠損値を無視するかどうか
+                        Falseにすることで欠損値がある場合、最小値は NaN　になる
+
+
+次に日付の補正
+Excelデータを取り扱う際、「書式が違うデータが混在する」ことに注意！
+
+    (ex) 2017/2/16 → 42782 になってしまったりする
+
+    flg_is_serial = kokyaku_data['登録日'].astype('str').str.isdigit()
+    print(flg_is_serial.sum())
+      まずは数値となっている箇所の特定
+      全ての文字列が数字か判定 >> str.isdigit()
+
+    fromSerial = pd.to_timedelta(kokyaku_data.loc[flg_is_serial, '登録日'].astype('float'), unit='D') + pd.to_datetime('1900/01/01')
+      数値 → 日付に変換
+      日付・時間を足すには to_timedelta を用いる
+      数値の箇所をまず float に型変換してから、timedelta[day] に変換 (unitで年月日指定)
+      timedelta は時間の差分を表しており、timedate に対して加減演算を行うことができる
+
+
+
+データの結合
+    join_data = pd.merge(uriage_data, kokyaku_data, left_on='customer_name', right_on='顧客名', how='left')
+      left_on には最初に指定したデータのキー　right_on には次に指定したデータのキーでジョイン
+
+    join_data = join_data.drop('customer_name', axis=1)
+      キーが被っているため、その列をデータから落とす
+
+
+
+これまでのデータ分析をデータクレンジングと呼ぶ
+クレンジングしたデータをファイルに出力することを「ダンプ」と呼ぶ
+    dump_data = join_data[['purchase_date', 'item_name', 'item_price', '顧客名', 'かな', '地域', 'メールアドレス', '登録日']] # 整形
+      まずは綺麗で見やすい形に整形
+
+    dump_data.to_csv('dump_data.csv', index=False)
+      csv ファイルに書き込み
+
+
+
+データの統計量確認
+
+    byItem = import_data.pivot_table(index='purchase_month', columns='item_name', aggfunc='size', fill_value=0)
+      月ごとの商品別売り上げ個数　→　縦軸を購入月、横軸を商品名
+      aggfunc='size' →  個数はsizeで指定
+      fill_value →  Nanのところは0で補間
+
+    byPrice = import_data.pivot_table(index='purchase_month', columns='item_name', values='item_price', aggfunc='sum', fill_value=0)
+      月ごとの商品別売り上げ　→　縦軸を購入月、横軸を商品名、値を商品売値
+      aggfunc='sum' →  金額は values = item_price で置いて集計方法は sum
