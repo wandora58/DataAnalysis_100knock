@@ -24,7 +24,9 @@ model.fit(X_train, y_train)
 print(model.score(X_train, y_train))
 print(model.score(X_test, y_test))
 
+
 # 回帰モデルの説明変数ごとの寄与係数確認
+
 coef = pd.DataFrame({'feature_names':X.columns, 'coefficient':model.coef_})
 print(coef)
 
