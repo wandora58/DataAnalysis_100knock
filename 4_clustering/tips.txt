@@ -1,0 +1,168 @@
+
+4章では3章で事前分析を行った会員の行動情報を用いて、機械学習による予測を行っていく
+
+会員の行動はその利用頻度によって傾向が大きく異なるので、
+クラスタリングという手法を用いて会員をグルーピングしていき
+それぞれのグループの行動パターンを掴んで予測を行う
+
+dump_data の各列
+・membership_period  会員期間
+・mean, median, max, min  月別利用回数
+・routing_flg　定期的に利用しているか
+
+
+K-means を用いたクラスタリング：変数間の距離をベースにクラスタリングを行う
+
+  K-means のアルゴリズム  https://www.slideshare.net/takemikami/k-means-55567232
+  ①クラスタ数(k)を決める
+  ②クラスタの中心点を対象データからランダムに k 個選ぶ
+  ③繰り返し
+   - 各データを最も近くにあるクラスタの中心点と結ぶつける
+   − クラスタ内のデータの平均値を新たなクラスタの中心点にする
+   − クラスタの中心点が変化しなくなったら終了
+
+  from sklearn.preprocessing import StandardScaler
+  from sklearn.cluster import KMeans
+
+  ①まずはグルーピング数を設定
+
+  ②データの範囲にばらつきがあるときは標準化
+    sc = StandardScaler()
+    data_sc = sc.fit_transform(data)
+
+  ③Kmeansを用いたクラスタリング
+    kmeans = KMeans(n_clusters=自分で設定, random_state=0)
+    clusters = kmeans.fit(data_sc)
+      入力データ :      data         shape=(data_size, labels)
+      結果データ : clusters.labels_  shape=(data_size, 1) ここにグルーピングした結果が入る
+                                                         n_clusters=4 なら 0~3 で入る
+
+
+次にクラスタリング結果を可視化 → ラベルは多次元のため次元削減を行わなくてはいけない
+多次元の結果表示は「主成分分析」を用いる
+
+  主成分分析のアルゴリズム
+  ①全データの重心を求める
+  ②重心からデータの分散(ばらつき)が最大となる方向を見つける
+  ③新しいデータ表現軸として見つけた方向を基軸とする(主成分の第一次元)
+  ④上記でとった軸と直交する方向に対して分散(ばらつき)が最大となる方向を見つける
+  ⑤②と③をデータの次元数分だけ繰り返す
+
+
+  from sklearn.decomposition import PCA
+
+  ①標準化したデータが主成分分析の対象
+  X = sc.fit_transform(data)
+
+  ②主成分分析
+  pca = PCA(n_components=2) >> 二次元に次元削減する
+  x_pca = pca.fit_transform(X)
+  print(pca.explained_variance_ratio_) >> 主成分の次元ごとの寄与率
+  print(sum(pca.explained_variance_ratio_)) >> 累積寄与率
+
+  ③データフレームに格納し、クラスターを付与
+  pca_df = pd.DataFrame(x_pca)
+  pca_df['cluster'] = data['cluster']
+
+  ④グラフに壁画
+  colors = ['red','blue','yellow','pink']
+  for i in customer_clustering['cluster'].unique():
+      tmp = pca_df.loc[pca_df['cluster']==i]
+      plt.scatter(tmp[0], tmp[1], c=colors[i]) >> tmp[0](pca_df の1番目列)は PCA の第1主成分
+  plt.show()                                   >> tmp[1](pca_df の2番目列)は PCA の第2主成分
+                                               >> よって (x, y) = (第1主成分, 第2主成分) でプロットしており、
+                                               >> クラスタが異なる部分は主成分が異なり離れて分布する
+
+
+
+次にクラスタリング結果を元に退会顧客の傾向を把握する
+継続顧客と退会顧客の集計
+  customer_clustering = pd.concat([customer_clustering, customer], axis=1)
+  print(customer_clustering.groupby(['cluster', 'is_deleted'], as_index=False).count()[['cluster', 'is_deleted', 'customer_id']])
+
+定期利用しているかどうかも確認　
+  print(customer_clustering.groupby(['cluster', 'routing_flg'], as_index=False).count()[['cluster', 'routing_flg', 'customer_id']])
+
+
+
+
+次に利用回数の予測モデルを作成する
+今回は 6ヵ月分 の利用回数データから 翌月 の利用回数データを予測するモデルを作成する
+まずは訓練データ作成
+
+  ①元のデータを年月、顧客ごとに集計する
+    uselog = pd.read_csv('use_log.csv')
+    uselog['usedate'] = pd.to_datetime(uselog['usedate'])
+    uselog['usemonth'] = uselog['usedate'].dt.strftime('%Y%m')
+    uselog_months = uselog.groupby(['usemonth', 'customer_id'], as_index=False).count()
+    uselog_months.rename(columns={'log_id':'count'}, inplace=True)
+    del uselog_months['usedate']
+
+  ②訓練データと教師データの作成
+    今回は 2018/4 ~ 2019/3 のデータがあるので、
+      2018/4 ~ 2018/9 → 2018/10
+      2018/5 ~ 2018/6 → 2018/11
+        :
+      となるデータを作成する　
+
+      year_months = list(uselog_months['usemonth'].unique())
+      train_data = pd.DataFrame()
+      for i in range(6, len(year_months)):
+          tmp = uselog_months.loc[uselog_months['usemonth']==year_months[i]]
+          tmp.rename(columns={'count':'count_pred'}, inplace=True)
+          for j in range(1, 7):
+              tmp_before = uselog_months.loc[uselog_months['usemonth']==year_months[i-j]]
+              del tmp_before['usemonth']
+              tmp_before.rename(columns={'count':'count_{}'.format(j-1)}, inplace=True)
+              tmp = pd.merge(tmp, tmp_before, on='customer_id', how='left')
+          train_data = pd.concat([train_data, tmp], ignore_index=True)
+
+          pd.concat() は軸指定しないと行(インデックス)方向に結合
+
+   ③欠損値処理
+     機械学習モデルは欠損値があると扱えないため処理をしなくてはならない
+     今回は欠損値がある行を削除する
+
+     train_data = train_data.dropna()
+     train_data = train_data.reset_index(drop=True)
+       行を削除した後、インデックスを初期化している
+
+   ④特徴生成
+     ここでは会員期間を付与する
+     会員期間は時系列ごとに変化が見られるため有効な手である
+
+     customer = pd.read_csv('dump_data.csv')
+     train_data = pd.merge(train_data, customer[['customer_id', 'start_date']], on='customer_id', how='left')
+     train_data['now_date'] = pd.to_datetime(train_data['usemonth'], format='%Y%m')
+     train_data['start_date'] = pd.to_datetime(train_data['start_date'])
+     train_data['period'] = 0
+     for i in range(len(train_data)):
+         delta = relativedelta(train_data['now_date'][i], train_data['start_date'][i])
+         train_data['period'][i] = delta.years*12 + delta.months
+
+
+
+次に予測モデルを作成して予測を行う
+今回は 2018/4 以降に新規入会した顧客のみを対象にして行う
+(古くからいる顧客は利用頻度が安定的になっている可能性があるため)
+今回は線形回帰モデルで行う
+
+  train_data = pd.read_csv('train_data.csv')
+  train_data['start_date'] = pd.to_datetime(train_data['start_date'])
+  train_data = train_data.loc[train_data['start_date']>=pd.to_datetime('20180401')]
+
+  X = train_data[['count_0', 'count_1', 'count_2', 'count_3', 'count_4', 'count_5', 'period']]
+  y = train_data['count_pred']
+
+  X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(X, y)
+
+  model = linear_model.LinearRegression()
+  model.fit(X_train, y_train)
+
+  print(model.score(X_train, y_train))
+  print(model.score(X_test, y_test))
+    sklearn は fit してから score() で精度を確認できる
+
+  coef = pd.DataFrame({'feature_names':X.columns, 'coefficient':model.coef_})
+    model.coef_ で回帰モデルの説明変数ごとの寄与係数を確認できる
+
