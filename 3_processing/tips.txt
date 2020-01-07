@@ -1,0 +1,150 @@
+
+3章では機械学習を行う前の前段階となる、人間の手によるデータ分析を適切に行うためのデータ加工技術を学ぶ
+これにより、今取り扱っているデータがどのようなものであるか把握でき、
+どのような機械学習の手法を用いれば良い結果が出るのか判断できるようになる！
+
+データ分析をする際には、データ分析の目的から考えること
+→ データ分析の目的によって主となるデータが変わってくるため
+
+
+
+まずは会員データからどのような顧客が何人いるのか、全体像を掴む
+
+  customer = pd.read_csv('customer_master.csv')
+  class_master = pd.read_csv('class_master.csv')
+  campaign_master = pd.read_csv('campaign_master.csv')
+    データの読み込み
+
+  customer_join = pd.merge(customer, class_master, on='class', how='left')
+  customer_join = pd.merge(customer_join, campaign_master, on='campaign_id', how='left')
+    データの結合
+
+  print(len(customer_join))
+  print(customer_join.isnull().sum())
+    加工したらデータ数、欠損値の有無を確認すること
+    ustomer_join.isnull().sum() >> 列ごとの欠損値の個数を表示
+
+
+
+次に会員期間を表す列を追加
+datetime を比較するライブラリ relativedelta を用いる
+
+  customer_join['calc_date'] = pd.to_datetime(customer_join['end_date'])
+  customer_join['calc_date'] = customer_join['calc_date'].fillna(pd.to_datetime('20190430'))
+    計算用の列を追加(まだ退会していない顧客(NA)は 20190430 で埋める)
+
+  customer_join['membership_period'] = 0
+  customer_join['start_date'] = pd.to_datetime(customer_join['start_date'])
+  for i in range(len(customer_join)):
+      delta = relativedelta(customer_join['calc_date'].iloc[i], customer_join['start_date'].iloc[i])
+      customer_join['membership_period'].iloc[i] = delta.years*12 + delta.months
+
+    iloc[] は行を指定する
+    relativedelta(datetime1, datetime2) で日付の差分を取得
+      >> relativedelta(years=+3, months=+1, days=+29) となるので
+    years*12 + months で月単位の差分が得られる！
+     
+
+
+次にデータの基礎集計をとる
+様々な切り口で集計を取れるが、今回は会員区分、キャンペーン区分、性別、すでに退会済みか等で集計をとる
+
+  会員区分
+  print(customer_join.groupby('class_name').count()['customer_id'])
+
+  キャンペーン区分
+  print(customer_join.groupby('campaign_name').count()['customer_id'])
+
+  性別
+  print(customer_join.groupby('gender').count()['customer_id'])
+
+  すでに退会済みか
+  print(customer_join.groupby('is_deleted').count()['customer_id'])
+
+  2018年4月〜2019年3月に入会した人数
+  customer_join['start_date'] = pd.to_datetime(customer_join['start_date'])
+  customer_start = customer_join.loc[customer_join['start_date'] > pd.to_datetime('20180401')]
+  print('入会人数 ', len(customer_start))
+
+    datetime型は以上以下等で比較可能！
+
+
+
+次に最新の顧客データをとる
+最新月の顧客データを集計することで、現在顧客の実態像を掴む
+
+まずは最新月の顧客の絞り込み
+ここでは2019年3月(最新月)に在籍している顧客(=2019年3月で退会 or 退会していない)で絞り込み
+
+  customer_join['end_date'] = pd.to_datetime(customer_join['end_date'])
+  customer_newer = customer_join.loc[(customer_join['end_date'] >= pd.to_datetime('20190331')) | (customer_join['end_date'].isna())]
+  print(len(customer_newer))
+    欠損値があるなら True >> isna()
+
+  print(customer_newer['end_date'].unique())
+    確認　>> ユニークで見て、退会していない(Nat) か 2019/03/31 ならOK
+
+
+
+次に利用履歴データの活用を検討する
+利用履歴データでは時間的な要素の分析ができる！
+例えば、月内の利用回数がどのように変化しているのか、定期的にジムを利用している顧客なのか等がわかる
+
+
+
+まずは顧客ごとの月利用回数
+  uselog['usedate'] = pd.to_datetime(uselog['usedate'])
+  uselog['usemonth'] = uselog['usedate'].dt.strftime('%Y%m')
+    年月日　→　年月
+
+  uselog_months = uselog.groupby(['usemonth', 'customer_id'], as_index=False).count()
+    groupby のリスト指定は
+    usemonth    customer_id    A   B  ...  のような列になり、
+    　　　　　　　　　　　　　　　　　　　　　　　 count() でそれぞれの個数をカウント
+
+  uselog_months.rename(columns={'log_id':'count'}, inplace=True)
+  del uselog_months['usedate']
+    名前を変更して usemonth があるから usedate を落とす
+
+
+次に顧客ごとに絞り込み
+平均、中央値、最大、最小値を算出
+  uselog_customer = uselog_months.groupby('customer_id').agg(['mean', 'median', 'max', 'min'])['count']
+    それぞれの顧客の月利用回数に対して平均、中央値、最大、最小値を算出
+
+  uselog_customer = uselog_customer.reset_index(drop=False)
+    インデックスを振り直す
+    引数の drop は振り直した index を列として保存しておくならFalse、保存しないならTrue
+
+
+次に定期利用しているかどうかを確認
+ジムの場合、習慣化が重要なファクターの一つと考えられる
+定期的の定義が大事だがここでは、毎週同じ曜日に来ているかで判断する
+
+  uselog['weekday'] = uselog['usedate'].dt.weekday
+    曜日の計算を行う
+    月曜日:0 ~ 日曜日:6 として、datetime を渡すことでそれぞれの曜日を計算
+
+  uselog_weekday = uselog.groupby(['customer_id', 'usemonth', 'weekday'], as_index=False).count()[['customer_id', 'usemonth', 'weekday', 'log_id']]
+    顧客、年月、曜日ごとに log_id をカウントしている
+    よって例として
+      customer_id usemonth  weekday  count
+      　　AS002855   201804        5      4   ならば weekday=5(土曜日)に4回来ている
+
+
+
+ここから顧客ごとに最大値を取得し、その最大値が 4 以上ならフラグを立てる
+
+  uselog_weekday = uselog_weekday.groupby('customer_id', as_index=False).max()[['customer_id', 'count']]
+    顧客ごとに最大値を取得
+
+  uselog_weekday['routing_flg'] = 0
+  uselog_weekday['routing_flg'] = uselog_weekday['routing_flg'].where(uselog_weekday['count'] < 4, 1)
+
+    条件文を表す where 文
+    df['A'] = df['B'].where(条件文)  >>   条件文を満たすなら df['A'] = df['B']
+                                         満たさないなら df['A'] = None
+
+    f['A'] = df['B'].where(条件文, 1)  >>   条件文を満たすなら df['A'] = df['B']
+                                           満たさないなら df['A'] = 1
+                                           ※第二引数を指定することで条件を満たさないとき、第二引数が None の代わりに代入
