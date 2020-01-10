@@ -1,0 +1,146 @@
+
+5章では既に退会してしまった顧客と継続して利用している顧客データを用いて、
+顧客が退会してしまうかを予測するモデルを「決定木」を用いて学ぶ
+
+今回は退会してしまうかを予測するモデルのため、
+今回は 先月 の利用回数データから 今月 に退会するかどうかを予測する
+ ※ 4章のように 6ヶ月前 → 今月 だと5ヶ月以内の退会が予測できない
+   2ヶ月、3ヶ月で退会する顧客も多いためこれでは意味がない
+
+まずは 前月 → 今月 の利用回数の集計
+ year_months = list(uselog_months['usemonth'].unique())
+uselog = pd.DataFrame()
+ for i in range(1, len(year_months)):
+     tmp = uselog_months.loc[uselog_months['usemonth']==year_months[i]]
+     tmp.rename(columns={'count':'count_pred'}, inplace=True)
+     tmp_before = uselog_months.loc[uselog_months['usemonth']==year_months[i-1]]
+     del tmp_before['usemonth']
+     tmp_before.rename(columns={'count':'count_before'}, inplace=True)
+     tmp = pd.merge(tmp, tmp_before, on='customer_id', how='left')
+     uselog = pd.concat([uselog, tmp], ignore_index=True)
+
+
+
+次に先月退会した顧客データを作成
+今回のジムにおいては月末までに退会申請を提出することで、翌月末で退会できる
+ (ex)
+     2018/8　　2018/9
+     退会申請    退会
+　　　　　　　　　　↑ end_dateはここを表している
+
+退会の予測の目的は、退会を未然に防ぐこと
+よって退会申請を出した時の顧客情報が大事！
+
+まずは顧客データに退会申請した月を追加
+  exit_customer = customer.loc[customer['is_deleted']==1]
+  exit_customer['end_date'] = pd.to_datetime(exit_customer['end_date'])
+  exit_customer['exit_date'] = None
+  for i in range(len(exit_customer)):
+      exit_customer['exit_date'].iloc[i] = exit_customer['end_date'].iloc[i] - relativedelta(months=1)
+  exit_customer['exitmonth'] = exit_customer['exit_date'].dt.strftime('%Y%m')
+
+次に顧客データと前月(退会申請した月)と今月の利用回数の集計を結合
+  uselog.rename(columns={'usemonth':'exitmonth'}, inplace=True)
+  uselog['exitmonth'] = uselog['exitmonth'].astype('str')
+  exit_customer = pd.merge(uselog, exit_customer, on=['customer_id', 'exitmonth'], how='left')
+  print(exit_customer)
+
+ここで前月が退会申請した月のみとなるため、データが欠損値が多く発生
+欠損値がある月はまだ退会していないので消去
+  exit_customer = exit_customer.dropna(subset=['name'])
+  print(exit_customer.head())
+
+  列Aに欠損値がある行を削除 dropna(subset=['列A'])
+
+
+
+次に継続利用している顧客データを作成
+継続利用している顧客は退会月があるわけでは無いのでどの月でもOK！
+  year_months = list(uselog_months['usemonth'].unique())
+  uselog = pd.DataFrame()
+  for i in range(1, len(year_months)):
+      tmp = uselog_months.loc[uselog_months['usemonth']==year_months[i]]
+      tmp.rename(columns={'count':'count_now'}, inplace=True)
+      tmp_before = uselog_months.loc[uselog_months['usemonth']==year_months[i-1]]
+      del tmp_before['usemonth']
+      tmp_before.rename(columns={'count':'count_before'}, inplace=True)
+      tmp = pd.merge(tmp, tmp_before, on='customer_id', how='left')
+      uselog = pd.concat([uselog, tmp], ignore_index=True)
+
+継続している顧客データを絞り込み、前月と今月の利用回数の集計を結合させて継続している顧客データを作成
+  continue_customer = customer.loc[customer['is_deleted']==0]
+  continue_customer = pd.merge(uselog, continue_customer, on='customer_id', how='left')
+
+ここで継続している顧客データのみとなるため、データが欠損値が発生 → 削除
+また前月の利用回数が無いデータもある → 削除
+  continue_customer = continue_customer.dropna(subset=['name'])
+  continue_customer = continue_customer.dropna(subset=['count_before'])
+
+退会した顧客データは 1ヶ月分 のデータしかないが、継続した顧客データは 数ヶ月分 あるためアンダーサンプリングを行う
+  continue_customer = continue_customer.sample(frac=1).reset_index(drop=True)
+    行をランダムに抽出する >> sample(frac=抽出する割合)　frac=1 なので 100% 抽出
+                                                   ランダムにシャッフルしているだけ
+
+  continue_customer = continue_customer.drop_duplicates(subset='customer_id')
+    重複した要素を含む行を抽出する >> duplicates(subset=列指定)  最初の行は False となるが
+                                                           重複した要素がある行は True となる
+
+    重複した要素を含む行を削除する >> drop_duplicates(subset=列指定)  True 行を削除
+
+
+
+次に訓練データを作成する
+まずは継続利用顧客と退会顧客を縦結合
+  train_data = pd.concat([continue_customer, exit_customer], ignore_index=True)
+
+次に 年月 がそれぞれバラバラなのでそれぞれの月までの在籍期間を追加
+  train_data['period'] = 0
+  train_data['now_date'] = pd.to_datetime(train_data['usemonth'], format='%Y%m')
+  train_data['start_date'] = pd.to_datetime(train_data['start_date'])
+  for i in range(len(train_data)):
+      delta = relativedelta(train_data['now_date'][i], train_data['start_date'][i])
+      train_data['period'][i] = int(delta.years*12 + delta.months)
+
+今回の説明変数は キャンペーン区分、クラス名、性別、1ヶ月前の利用回数、定期利用しているか、在籍期間
+　　　目的変数は 退会しているかどうか
+  target_col = ['campaign_name', 'class_name', 'gender', 'count_before', 'routing_flg', 'period', 'is_deleted']
+  train_data = train_data[target_col]
+
+次に文字列型の変数を処理できるように整形
+入会キャンペーン区分、会員区分、性別などのカテゴリー関連のデータを「カテゴリカル変数」と呼び、
+そのままでは扱えないため 0,1 などのフラグを立てる(ダミー変数化と呼ぶ)
+  train_data = pd.get_dummies(train_data)
+
+    カテゴリ変数をダミー変数に変換 >> pd.get_dummies()
+    注意として 元のカテゴリ変数が gender = [M,F,F,...] 等なら
+    ダミー変数は gender_M = [1,0,0,..]  gender_F = [0,1,1,..] になる
+    これらは一つあれば大丈夫なので、もう一つは削除する
+
+
+それではモデリングを行う
+今回扱うのは 決定木 (decision_tree1.png / decision_tree2.png)
+
+まずは教師データと訓練データの作成
+  X = pd.concat([exit, conti], ignore_index=True)
+  y = X['is_deleted']
+  del X['is_deleted']
+  X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(X, y)
+
+決定木モデル
+  model = DecisionTreeClassifier(random_state=0)
+  model.fit(X_train, y_train)
+  print('test ', model.score(X_test, y_test))
+  print('train ', model.score(X_train, y_train))
+
+過学習を起こしているのモデルのチューニング
+  model = DecisionTreeClassifier(random_state=0, max_depth=5)
+  model.fit(X_train, y_train)
+  print('after tunning')
+  print('test ', model.score(X_test, y_test))
+  print('train ', model.score(X_train, y_train))
+
+モデルに寄与している変数(特徴量)を確認
+  importance = pd.DataFrame({'feature_names': X.columns, 'coefficient': model.feature_importances_})
+
+
+
