@@ -1,0 +1,224 @@
+
+この章では物流の最適ルートをコンサルティングする
+どこでどれくらいの商品を生産し、どこの倉庫で在庫を保管し、どこの代理店に幾つの商品を
+配送するかという「物流」は商品の売り上げを左右する生命線
+
+まず物流の基礎である「輸送最適化」の技術を学び、実際の物流データからネットワーク構造を可視化し
+最適な物流計画を立案する
+
+まずはデータの読み込み
+  tbl_factory 生産工場データ
+  tbl_warehouse 倉庫データ
+  rel_cost 倉庫と工場の輸送コストデータ
+  tbl_transaction 工場への部品輸送実績(2019)
+
+  関東支社の総コスト: 2189.3万円
+  東北支社の総コスト: 2060.5万円
+  関東支社の総部品輸送個数: 49146個
+  東北支社の総部品輸送個数: 50214個
+  関東支社の部品１つ当たりの輸送コスト: 445円
+  東北支社の部品１つ当たりの輸送コスト: 410円
+
+
+
+次に物流の最適ルートの分析
+それにあたりまずは物流ネットワークの可視化から行う
+
+グラフライブラリは networkx が有効
+
+  import networkx as nx
+  import matplotlib.pyplot as plt
+
+まずはグラフオブジェクトの作成
+  G = nx.Graph()
+
+次に頂点と辺の設定
+  G.add_node('nodeA')
+  G.add_node('nodeB')
+  G.add_node('nodeC')
+
+  G.add_edge('nodeA', 'nodeB')
+  G.add_edge('nodeA', 'nodeC')
+  G.add_edge('nodeB', 'nodeC')
+
+座標の設定 >> 座標は辞書型
+  position = {}
+  position['nodeA'] = (0, 0)
+  position['nodeB'] = (1, 1)
+  position['nodeC'] = (0, 1)
+
+描画 >> draw(グラフオブジェクト, 座標, with_labels=ノード名を表示させるか)
+  nx.draw(G, position, with_labels=True)
+
+表示
+  plt.show()
+
+
+
+辺の重み付けを行ったネットワークも作成可能
+
+df_weight =  df(      A         B         C         D         E
+                0  0.639921  0.143353  0.944669  0.521848  0.000000
+                1  0.264556  0.000000  0.456150  0.568434  0.000000
+                2  0.617635  0.612096  0.616934  0.943748  0.000000
+                3  0.000000  0.000000  0.697631  0.060225  0.666767
+                4  0.670638  0.210383  0.000000  0.315428  0.000000)
+
+df_position =  df(   A  B  C  D  E
+                  0  0  0  2  2  1
+                  1  0  2  0  2  1)
+
+エッジの重みリスト化 >> これは描画の際に重み付けするためのリスト
+                     順番をあとで登録する 辺の設定 の順番と同じにする
+  size = 10
+  edge_weights = []
+  for i in range(len(df_weight)):
+      for j in range(len(df_weight.columns)):
+          edge_weights.append(df_weight.iloc[i][j]*size)
+
+グラフオブジェクトの作成
+  G = nx.Graph()
+
+頂点の設定
+  for i in range(len(df_weight.columns)):
+      G.add_node(df_weight.columns[i])
+
+辺の設定 >> ノードを2回回してずらせば良い
+  for i in range(len(df_weight.columns)):
+      for j in range(len(df_weight.columns)):
+          G.add_edge(df_weight.columns[i], df_weight.columns[j])
+
+座標の設定
+  position = {}
+  for i in range(len(df_weight.columns)):
+      node = df_weight.columns[i]
+      position[node] = (df_position[node][0], df_position[node][1])
+
+描画 >> width = edge_weight で線幅で重み付けする
+  nx.draw(G, position, with_labels=True,font_size=16, node_size = 1000, node_color='k', font_color='w', width=edge_weights)
+
+表示
+  plt.show()
+
+
+
+さて次に物流ルートの最適化
+ある製品の部品を格納した倉庫 W1,W2,W3 から
+必要な量の部品を工場 F1, F2, F3, F4 に運ぶ
+なるべく最小コストで輸送を実行したいが、そのためには
+どの倉庫からどの工場にどれだけの量を輸送すべきか検討しなくてはいけない
+
+まずはデータの読み込み
+
+  trans_route 輸送ルート(どの倉庫からどの倉庫へ、どれだけの量の輸送が行われているか)
+  trans_route_position 倉庫・工場の位置情報
+  trans_cost 倉庫と工場間の輸送コスト
+  demand 工場の製品生産量に対する需要
+  supply 倉庫が供給可能な部品数の上限
+  trabs_route_new 新しく設定し直した輸送ルート
+
+数字じゃわかりにくいので可視化
+
+df_trans =  df(     F1  F2  F3  F4   どの倉庫からどの倉庫へ、どれだけの量の輸送が行われているか
+                W1  15  15   0   5
+                W2   5   0  30   5
+                W3  10  15   2  15 )
+
+df_position =  df(    W1  W2  W3   F1   F2   F3   F4  倉庫・工場の位置情報(座標)
+                   0   0   0   0  4.0  4.0  4.0  4.0
+                   1   1   2   3  0.5  1.5  2.5  3.5 )
+
+
+グラフオブジェクトの作成
+  G = nx.Graph()
+
+頂点の設定
+  for i in range(len(df_pos.columns)):
+    G.add_node(df_pos.columns[i])
+
+辺の設定 & エッジの重みのリスト化
+  num_pre = 0
+  edge_weights = []
+  size = 0.1
+  for i in range(len(df_pos.columns)):
+    for j in range(len(df_pos.columns)):
+      if not (i==j):
+
+        辺の追加
+        G.add_edge(df_pos.columns[i],df_pos.columns[j])
+
+        エッジの重みの追加
+        if num_pre < len(G.edges):
+          num_pre = len(G.edges)
+          weight = 0
+          if (df_pos.columns[i] in df_trans.columns)and(df_pos.columns[j] in df_trans.index):
+            if df_trans[df_pos.columns[i]][df_pos.columns[j]]:
+              weight = df_trans[df_pos.columns[i]][df_pos.columns[j]]*size
+          elif(df_pos.columns[j] in df_trans.columns)and(df_pos.columns[i] in df_trans.index):
+            if df_trans[df_pos.columns[j]][df_pos.columns[i]]:
+              weight = df_trans[df_pos.columns[j]][df_pos.columns[i]]*size
+          edge_weights.append(weight)
+
+座標の設定
+position = {}
+for i in range(len(df_pos.columns)):
+node = df_pos.columns[i]
+position[node] = (df_pos[node][0],df_pos[node][1])
+
+描画
+nx.draw(G, position, with_labels=True,font_size=16, node_size = 1000, node_color='k', font_color='w', width=edge_weights)
+
+表示
+plt.show()
+
+
+
+次に輸送コスト関数を作成
+仮説は「輸送コストを下げられる効率的な輸送ルートがあるのではないか」
+そのために目的関数と制約条件を作成
+
+輸送コスト計算は容易
+ある輸送ルートの輸送量とコストを掛け合わせ、それらを全て足し合わせる
+
+  def trans_cost(df_tr,df_tc):
+      cost = 0
+      for i in range(len(df_tc.index)):
+          for j in range(len(df_tr.columns)):
+              cost += df_tr.iloc[i][j]*df_tc.iloc[i][j]
+    　return cost
+
+  print("総輸送コスト:"+str(trans_cost(df_tr,df_tc)))
+
+
+
+次に制約条件を作成
+各倉庫には供給可能な部品数の上限があり
+各工場には満たすべき最低限の製品製造量がある
+
+
+需要側の制約条件
+工場で製造される製品の数が需用量を満たすかどうかは、各工場に運び込まれる部品の数と
+各工場に対する需用量を比較することで検討可能
+  for i in range(len(df_demand.columns)):
+      temp_sum = sum(df_tr[df_demand.columns[i]])
+      print(str(df_demand.columns[i])+"への輸送量:"+str(temp_sum)+" (需要量:"+str(df_demand.iloc[0][i])+")")
+      if temp_sum>=df_demand.iloc[0][i]:
+          print("需要量を満たしています。")
+      else:
+          print("需要量を満たしていません。輸送ルートを再計算して下さい。")
+
+
+
+供給側の制約条件
+倉庫から工場に出荷される部品の数が、倉庫の供給限界を超えるかどうかは
+各倉庫から出荷される部品の数と各倉庫の供給限界量を比較することで検討可能
+  for i in range(len(df_supply.columns)):
+      temp_sum = sum(df_tr.loc[df_supply.columns[i]])
+      print(str(df_supply.columns[i])+"からの輸送量:"+str(temp_sum)+" (供給限界:"+str(df_supply.iloc[0][i])+")")
+      if temp_sum<=df_supply.iloc[0][i]:
+          print("供給限界の範囲内です。")
+      else:
+          print("供給限界を超過しています。輸送ルートを再計算して下さい。")
+
+
+
